@@ -1,8 +1,4 @@
-use bevy::{
-    input::mouse::{MouseMotion, MouseWheel},
-    prelude::*,
-    window::PrimaryWindow,
-};
+use bevy::{input::mouse::MouseWheel, prelude::*, window::PrimaryWindow};
 use rustcube::{Color as CubeColor, Cube, Face, Move, Turn};
 
 const WINDOW_WIDTH: f32 = 1280.0;
@@ -17,7 +13,8 @@ fn main() {
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.045, 0.052, 0.08)))
         .insert_resource(CubeState::default())
-        .insert_resource(OrbitCamera::default())
+        .insert_resource(SceneView::default())
+        .insert_resource(DragInteraction::default())
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "RustCube".into(),
@@ -32,7 +29,10 @@ fn main() {
             Update,
             (
                 handle_keyboard_input,
-                orbit_camera_system,
+                begin_drag_system,
+                drag_cube_or_face_system,
+                finish_drag_system,
+                zoom_camera_system,
                 sync_sticker_materials,
                 sync_window_title,
             ),
@@ -61,28 +61,45 @@ struct MaterialPalette {
 }
 
 #[derive(Resource, Clone, Copy)]
-struct OrbitCamera {
-    yaw: f32,
-    pitch: f32,
+struct SceneView {
     radius: f32,
 }
 
-impl Default for OrbitCamera {
+impl Default for SceneView {
     fn default() -> Self {
-        Self {
-            yaw: 0.75,
-            pitch: -0.45,
-            radius: 11.5,
-        }
+        Self { radius: 11.5 }
     }
+}
+
+#[derive(Resource, Default)]
+struct DragInteraction {
+    current: Option<DragMode>,
+}
+
+#[derive(Clone, Copy)]
+enum DragMode {
+    RotateCube {
+        last_cursor: Vec2,
+    },
+    TurnFace {
+        face: Face,
+        start_cursor: Vec2,
+        face_center: Vec2,
+        face_normal_world: Vec3,
+    },
 }
 
 #[derive(Component)]
 struct OrbitCameraMarker;
 
 #[derive(Component)]
+struct CubeRoot;
+
+#[derive(Component, Clone, Copy)]
 struct Sticker {
     index: usize,
+    face: Face,
+    axis: Axis,
 }
 
 fn print_controls() {
@@ -93,7 +110,8 @@ fn print_controls() {
     info!("  Space      -> scramble");
     info!("  Z / Y      -> undo / redo");
     info!("  Backspace  -> reset");
-    info!("  Left drag  -> orbit camera");
+    info!("  Drag empty space -> rotate cube");
+    info!("  Drag a sticker    -> turn that face");
     info!("  Mouse wheel -> zoom");
 }
 
@@ -102,6 +120,16 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let cube_root = commands
+        .spawn((
+            Transform::from_rotation(Quat::from_rotation_x(-0.55) * Quat::from_rotation_y(0.72)),
+            GlobalTransform::default(),
+            Visibility::default(),
+            InheritedVisibility::default(),
+            CubeRoot,
+        ))
+        .id();
+
     commands.insert_resource(AmbientLight {
         color: Color::WHITE,
         brightness: 220.0,
@@ -109,7 +137,7 @@ fn setup_scene(
 
     commands.spawn((
         Camera3d::default(),
-        camera_transform(OrbitCamera::default()),
+        camera_transform(SceneView::default()),
         OrbitCameraMarker,
     ));
 
@@ -142,11 +170,13 @@ fn setup_scene(
     for x in -1..=1 {
         for y in -1..=1 {
             for z in -1..=1 {
-                commands.spawn((
-                    Mesh3d(body_mesh.clone()),
-                    MeshMaterial3d(body_material.clone()),
-                    Transform::from_translation(grid_to_world(x, y, z)),
-                ));
+                commands.entity(cube_root).with_children(|parent| {
+                    parent.spawn((
+                        Mesh3d(body_mesh.clone()),
+                        MeshMaterial3d(body_material.clone()),
+                        Transform::from_translation(grid_to_world(x, y, z)),
+                    ));
+                });
             }
         }
     }
@@ -180,19 +210,22 @@ fn setup_scene(
     });
 
     for index in 0..54 {
-        let face = index / 9;
-        let mesh = match face_axis(face) {
+        let face = sticker_face(index);
+        let axis = face_axis(face);
+        let mesh = match axis {
             Axis::X => sticker_mesh_x.clone(),
             Axis::Y => sticker_mesh_y.clone(),
             Axis::Z => sticker_mesh_z.clone(),
         };
 
-        commands.spawn((
-            Mesh3d(mesh),
-            MeshMaterial3d(palette[0].clone()),
-            Transform::from_translation(sticker_translation(index)),
-            Sticker { index },
-        ));
+        commands.entity(cube_root).with_children(|parent| {
+            parent.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(palette[0].clone()),
+                Transform::from_translation(sticker_translation(index)),
+                Sticker { index, face, axis },
+            ));
+        });
     }
 }
 
@@ -259,35 +292,170 @@ fn handle_keyboard_input(keys: Res<ButtonInput<KeyCode>>, mut cube_state: ResMut
     }
 }
 
-fn orbit_camera_system(
-    mut mouse_motion: EventReader<MouseMotion>,
-    mut mouse_wheel: EventReader<MouseWheel>,
+fn begin_drag_system(
     buttons: Res<ButtonInput<MouseButton>>,
-    mut orbit: ResMut<OrbitCamera>,
-    mut camera_query: Query<&mut Transform, With<OrbitCameraMarker>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<OrbitCameraMarker>>,
+    cube_root_query: Query<&GlobalTransform, With<CubeRoot>>,
+    stickers: Query<(&Sticker, &GlobalTransform)>,
+    mut drag: ResMut<DragInteraction>,
 ) {
-    if buttons.pressed(MouseButton::Left) {
-        let delta = mouse_motion
-            .read()
-            .fold(Vec2::ZERO, |acc, event| acc + event.delta);
-        if delta != Vec2::ZERO {
-            orbit.yaw -= delta.x * 0.005;
-            orbit.pitch = (orbit.pitch - delta.y * 0.004).clamp(-1.25, 1.25);
-        }
-    } else {
-        mouse_motion.clear();
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
     }
 
+    let Some(cursor) = cursor_position(&windows) else {
+        return;
+    };
+
+    let Some((camera, camera_transform)) = camera_query.iter().next() else {
+        return;
+    };
+    let Some((ray_origin, ray_direction)) = cursor_ray(camera, camera_transform, cursor) else {
+        return;
+    };
+
+    if let Some((sticker, _, _)) = pick_sticker(ray_origin, ray_direction, &stickers) {
+        let Ok(cube_root) = cube_root_query.get_single() else {
+            return;
+        };
+        let face_center_world = cube_root.transform_point(face_center_local(sticker.face));
+        if let Ok(face_center) = camera.world_to_viewport(camera_transform, face_center_world) {
+            drag.current = Some(DragMode::TurnFace {
+                face: sticker.face,
+                start_cursor: cursor,
+                face_center,
+                face_normal_world: cube_root
+                    .compute_transform()
+                    .rotation
+                    .mul_vec3(face_normal_local(sticker.face)),
+            });
+            return;
+        }
+    }
+
+    drag.current = Some(DragMode::RotateCube {
+        last_cursor: cursor,
+    });
+}
+
+fn drag_cube_or_face_system(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut drag: ResMut<DragInteraction>,
+    mut cube_root_query: Query<&mut Transform, With<CubeRoot>>,
+) {
+    if !buttons.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Some(cursor) = cursor_position(&windows) else {
+        return;
+    };
+
+    let Some(current) = drag.current else {
+        return;
+    };
+
+    if let DragMode::RotateCube { last_cursor } = current {
+        let delta = cursor - last_cursor;
+        if delta != Vec2::ZERO {
+            let Ok(mut cube_root) = cube_root_query.get_single_mut() else {
+                return;
+            };
+            cube_root.rotate_y(delta.x * 0.008);
+            cube_root.rotate_local_x(delta.y * 0.008);
+            drag.current = Some(DragMode::RotateCube {
+                last_cursor: cursor,
+            });
+        }
+    }
+}
+
+fn finish_drag_system(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<OrbitCameraMarker>>,
+    mut drag: ResMut<DragInteraction>,
+    mut cube_state: ResMut<CubeState>,
+) {
+    if !buttons.just_released(MouseButton::Left) {
+        return;
+    }
+
+    let Some(current) = drag.current.take() else {
+        return;
+    };
+
+    let DragMode::TurnFace {
+        face,
+        start_cursor,
+        face_center,
+        face_normal_world,
+    } = current
+    else {
+        return;
+    };
+
+    let Some(end_cursor) = cursor_position(&windows) else {
+        return;
+    };
+
+    let drag_delta = end_cursor - start_cursor;
+    if drag_delta.length() < 24.0 {
+        return;
+    }
+
+    let Some((_, camera_transform)) = camera_query.iter().next() else {
+        return;
+    };
+
+    let camera_position = camera_transform.translation();
+    let face_to_camera = camera_position.normalize_or_zero();
+    let facing_camera = face_normal_world.dot(face_to_camera) > 0.0;
+
+    let from = start_cursor - face_center;
+    let to = end_cursor - face_center;
+    let angle = signed_screen_angle(from, to);
+    let primary = if angle.abs() > 0.35 {
+        angle
+    } else {
+        drag_delta.x - drag_delta.y
+    };
+    let clockwise = if facing_camera {
+        primary > 0.0
+    } else {
+        primary < 0.0
+    };
+
+    let mv = Move {
+        face,
+        turn: if clockwise {
+            Turn::Clockwise
+        } else {
+            Turn::CounterClockwise
+        },
+    };
+    cube_state.cube.apply_move(mv);
+    cube_state.visuals_dirty = true;
+    info!("Dragged face {}", mv.notation());
+}
+
+fn zoom_camera_system(
+    mut mouse_wheel: EventReader<MouseWheel>,
+    mut scene_view: ResMut<SceneView>,
+    mut camera_query: Query<&mut Transform, With<OrbitCameraMarker>>,
+) {
     let scroll = mouse_wheel.read().fold(0.0, |acc, event| acc + event.y);
     if scroll != 0.0 {
-        orbit.radius = (orbit.radius - scroll * 0.4).clamp(5.5, 18.0);
+        scene_view.radius = (scene_view.radius - scroll * 0.4).clamp(5.5, 18.0);
     }
 
     let Ok(mut transform) = camera_query.get_single_mut() else {
         return;
     };
 
-    *transform = camera_transform(*orbit);
+    *transform = camera_transform(*scene_view);
 }
 
 fn sync_sticker_materials(
@@ -342,11 +510,8 @@ fn sync_window_title(
     window.title = format!("RustCube | {solved_state} | {preview}");
 }
 
-fn camera_transform(orbit: OrbitCamera) -> Transform {
-    let yaw_rot = Quat::from_rotation_y(orbit.yaw);
-    let pitch_rot = Quat::from_rotation_x(orbit.pitch);
-    let offset = yaw_rot * pitch_rot * Vec3::new(0.0, 0.0, orbit.radius);
-    Transform::from_translation(offset).looking_at(Vec3::ZERO, Vec3::Y)
+fn camera_transform(scene_view: SceneView) -> Transform {
+    Transform::from_xyz(0.0, 0.0, scene_view.radius).looking_at(Vec3::ZERO, Vec3::Y)
 }
 
 fn grid_to_world(x: i32, y: i32, z: i32) -> Vec3 {
@@ -364,12 +529,23 @@ enum Axis {
     Z,
 }
 
-fn face_axis(face: usize) -> Axis {
+fn face_axis(face: Face) -> Axis {
     match face {
-        0 | 1 => Axis::Y,
-        2 | 3 => Axis::X,
-        4 | 5 => Axis::Z,
-        _ => unreachable!("face index out of bounds"),
+        Face::Up | Face::Down => Axis::Y,
+        Face::Left | Face::Right => Axis::X,
+        Face::Front | Face::Back => Axis::Z,
+    }
+}
+
+fn sticker_face(index: usize) -> Face {
+    match index / 9 {
+        0 => Face::Up,
+        1 => Face::Down,
+        2 => Face::Left,
+        3 => Face::Right,
+        4 => Face::Front,
+        5 => Face::Back,
+        _ => unreachable!("sticker index out of bounds"),
     }
 }
 
@@ -423,4 +599,138 @@ fn color_index(color: CubeColor) -> usize {
         CubeColor::Green => 4,
         CubeColor::Blue => 5,
     }
+}
+
+fn cursor_position(windows: &Query<&Window, With<PrimaryWindow>>) -> Option<Vec2> {
+    windows.get_single().ok()?.cursor_position()
+}
+
+fn cursor_ray(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    cursor: Vec2,
+) -> Option<(Vec3, Vec3)> {
+    let ray = camera.viewport_to_world(camera_transform, cursor).ok()?;
+    Some((ray.origin, *ray.direction))
+}
+
+fn pick_sticker(
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+    stickers: &Query<(&Sticker, &GlobalTransform)>,
+) -> Option<(Sticker, Vec3, f32)> {
+    let mut closest: Option<(Sticker, Vec3, f32)> = None;
+
+    for (sticker, transform) in stickers.iter() {
+        let half_extents = sticker_half_extents(sticker.axis);
+        if let Some(distance) = ray_hits_box(ray_origin, ray_direction, transform, half_extents) {
+            let hit_point = ray_origin + ray_direction * distance;
+            if closest
+                .as_ref()
+                .map(|(_, _, current)| distance < *current)
+                .unwrap_or(true)
+            {
+                closest = Some((*sticker, hit_point, distance));
+            }
+        }
+    }
+
+    closest
+}
+
+fn ray_hits_box(
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+    transform: &GlobalTransform,
+    half_extents: Vec3,
+) -> Option<f32> {
+    let inverse = transform.affine().inverse();
+    let origin_local = inverse.transform_point3(ray_origin);
+    let direction_local = inverse.transform_vector3(ray_direction);
+
+    let mut t_min: f32 = 0.0;
+    let mut t_max = f32::INFINITY;
+
+    for axis in 0..3 {
+        let origin = origin_local[axis];
+        let direction = direction_local[axis];
+        let min = -half_extents[axis];
+        let max = half_extents[axis];
+
+        if direction.abs() < f32::EPSILON {
+            if origin < min || origin > max {
+                return None;
+            }
+            continue;
+        }
+
+        let inv_direction = 1.0 / direction;
+        let mut near = (min - origin) * inv_direction;
+        let mut far = (max - origin) * inv_direction;
+        if near > far {
+            std::mem::swap(&mut near, &mut far);
+        }
+
+        t_min = t_min.max(near);
+        t_max = t_max.min(far);
+        if t_min > t_max {
+            return None;
+        }
+    }
+
+    (t_max >= 0.0).then_some(t_min.max(0.0))
+}
+
+fn sticker_half_extents(axis: Axis) -> Vec3 {
+    match axis {
+        Axis::X => Vec3::new(
+            STICKER_THICKNESS * 0.5,
+            STICKER_SIZE * 0.5,
+            STICKER_SIZE * 0.5,
+        ),
+        Axis::Y => Vec3::new(
+            STICKER_SIZE * 0.5,
+            STICKER_THICKNESS * 0.5,
+            STICKER_SIZE * 0.5,
+        ),
+        Axis::Z => Vec3::new(
+            STICKER_SIZE * 0.5,
+            STICKER_SIZE * 0.5,
+            STICKER_THICKNESS * 0.5,
+        ),
+    }
+}
+
+fn face_center_local(face: Face) -> Vec3 {
+    match face {
+        Face::Up => Vec3::new(0.0, CUBIE_SPACING + STICKER_LIFT, 0.0),
+        Face::Down => Vec3::new(0.0, -CUBIE_SPACING - STICKER_LIFT, 0.0),
+        Face::Left => Vec3::new(-CUBIE_SPACING - STICKER_LIFT, 0.0, 0.0),
+        Face::Right => Vec3::new(CUBIE_SPACING + STICKER_LIFT, 0.0, 0.0),
+        Face::Front => Vec3::new(0.0, 0.0, CUBIE_SPACING + STICKER_LIFT),
+        Face::Back => Vec3::new(0.0, 0.0, -CUBIE_SPACING - STICKER_LIFT),
+    }
+}
+
+fn face_normal_local(face: Face) -> Vec3 {
+    match face {
+        Face::Up => Vec3::Y,
+        Face::Down => -Vec3::Y,
+        Face::Left => -Vec3::X,
+        Face::Right => Vec3::X,
+        Face::Front => Vec3::Z,
+        Face::Back => -Vec3::Z,
+    }
+}
+
+fn signed_screen_angle(from: Vec2, to: Vec2) -> f32 {
+    if from.length_squared() < 1.0 || to.length_squared() < 1.0 {
+        return 0.0;
+    }
+
+    let from = from.normalize();
+    let to = to.normalize();
+    let cross = from.x * to.y - from.y * to.x;
+    let dot = from.dot(to).clamp(-1.0, 1.0);
+    cross.atan2(dot)
 }
