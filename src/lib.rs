@@ -296,6 +296,14 @@ impl WasmCube {
         self.cube.redo().is_some()
     }
 
+    pub fn undo_move(&mut self) -> String {
+        self.cube.undo().map(Move::notation).unwrap_or_default()
+    }
+
+    pub fn redo_move(&mut self) -> String {
+        self.cube.redo().map(Move::notation).unwrap_or_default()
+    }
+
     pub fn is_solved(&self) -> bool {
         self.cube.is_solved()
     }
