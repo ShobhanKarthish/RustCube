@@ -1,48 +1,37 @@
 # RustCube
 
-`RustCube` is a browser-based 3D Rubik's Cube project with:
+`RustCube` is now a pure Rust desktop Rubik's Cube app built with Bevy.
 
-- Rust for canonical cube state and move logic
-- WebAssembly for browser interop
-- Three.js for rendering and animation
+- `src/lib.rs` keeps the canonical cube state and move logic.
+- `src/main.rs` runs a native Bevy desktop app for rendering and input.
 
 ## Project Layout
 
-- `src/`: Rust cube engine
-- `frontend/`: Vite + Three.js app shell
-- `scripts/build-wasm.mjs`: builds the Rust crate into a `pkg/` directory with `wasm-pack`
+- `src/lib.rs`: cube engine
+- `src/main.rs`: Bevy desktop application
 
 ## Getting Started
 
-### 1. Verify the Rust core
+### 1. Run tests
 
 ```bash
 cargo test
 ```
 
-### 2. Install frontend dependencies
+### 2. Launch the desktop app
 
 ```bash
-cd frontend
-npm install
+cargo run
 ```
 
-### 3. Install `wasm-pack`
+## Controls
 
-```bash
-cargo install wasm-pack
-```
-
-### 4. Start the frontend
-
-```bash
-cd frontend
-npm run dev
-```
-
-## Planned Feature Flow
-
-1. Finish the WASM binding layer for `Cube`
-2. Sync move application from Rust into the renderer
-3. Add pointer-based slice picking and animated turns
-4. Add scramble UI, undo/redo controls, and solved-state feedback
+- `U D L R F B`: turn faces clockwise
+- `Shift` + face key: counter-clockwise turn
+- `Alt` + face key: half turn
+- `Space`: scramble
+- `Z`: undo
+- `Y`: redo
+- `Backspace`: reset
+- Left mouse drag: orbit camera
+- Mouse wheel: zoom
