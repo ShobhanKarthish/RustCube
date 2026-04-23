@@ -1,6 +1,6 @@
 # RustCube
 
-`RustCube` is now a pure Rust desktop Rubik's Cube app built with Bevy.
+`RustCube` is a pure Rust desktop Rubik's Cube app built with Bevy.
 
 - `src/lib.rs` keeps the canonical cube state and move logic.
 - `src/main.rs` runs a native Bevy desktop app for rendering and input.
