@@ -1,3 +1,5 @@
+use wasm_bindgen::prelude::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Face {
     Up,
@@ -188,6 +190,132 @@ impl Move {
             face: self.face,
             turn,
         }
+    }
+
+    pub fn notation(self) -> String {
+        let face = match self.face {
+            Face::Up => "U",
+            Face::Down => "D",
+            Face::Left => "L",
+            Face::Right => "R",
+            Face::Front => "F",
+            Face::Back => "B",
+        };
+
+        let suffix = match self.turn {
+            Turn::Clockwise => "",
+            Turn::CounterClockwise => "'",
+            Turn::Half => "2",
+        };
+
+        format!("{face}{suffix}")
+    }
+}
+
+impl Color {
+    fn code(self) -> u8 {
+        match self {
+            Color::White => 0,
+            Color::Yellow => 1,
+            Color::Orange => 2,
+            Color::Red => 3,
+            Color::Green => 4,
+            Color::Blue => 5,
+        }
+    }
+}
+
+fn parse_move(input: &str) -> Result<Move, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("move notation cannot be empty".to_string());
+    }
+
+    let mut chars = trimmed.chars();
+    let face = match chars.next().unwrap() {
+        'U' => Face::Up,
+        'D' => Face::Down,
+        'L' => Face::Left,
+        'R' => Face::Right,
+        'F' => Face::Front,
+        'B' => Face::Back,
+        other => {
+            return Err(format!("unsupported face '{other}'"));
+        }
+    };
+
+    let suffix = chars.as_str();
+    let turn = match suffix {
+        "" => Turn::Clockwise,
+        "'" => Turn::CounterClockwise,
+        "2" => Turn::Half,
+        _ => {
+            return Err(format!("unsupported move suffix '{suffix}'"));
+        }
+    };
+
+    Ok(Move { face, turn })
+}
+
+#[wasm_bindgen]
+pub struct WasmCube {
+    cube: Cube,
+}
+
+#[wasm_bindgen]
+impl WasmCube {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { cube: Cube::new() }
+    }
+
+    pub fn reset(&mut self) {
+        self.cube.reset();
+    }
+
+    pub fn apply_move(&mut self, notation: &str) -> Result<(), JsValue> {
+        let mv = parse_move(notation).map_err(|message| JsValue::from_str(&message))?;
+        self.cube.apply_move(mv);
+        Ok(())
+    }
+
+    pub fn scramble(&mut self, len: usize) -> String {
+        self.cube
+            .scramble(len)
+            .into_iter()
+            .map(Move::notation)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn undo(&mut self) -> bool {
+        self.cube.undo().is_some()
+    }
+
+    pub fn redo(&mut self) -> bool {
+        self.cube.redo().is_some()
+    }
+
+    pub fn is_solved(&self) -> bool {
+        self.cube.is_solved()
+    }
+
+    pub fn stickers(&self) -> Vec<u8> {
+        self.cube
+            .stickers()
+            .iter()
+            .map(|color| color.code())
+            .collect()
+    }
+
+    pub fn history(&self) -> String {
+        self.cube
+            .history()
+            .iter()
+            .copied()
+            .map(Move::notation)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
