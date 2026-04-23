@@ -1,0 +1,10 @@
+{
+  "name": "rustcube",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "build": "node ./scripts/build-wasm.mjs && npm --prefix frontend run build",
+    "build:wasm": "node ./scripts/build-wasm.mjs",
+    "check": "cargo test"
+  }
+}
