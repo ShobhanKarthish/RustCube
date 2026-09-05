@@ -1,21 +1,31 @@
 # RustCube
 
-`RustCube` is a pure Rust desktop Rubik's Cube app built with Bevy.
+A desktop Rubik's Cube in pure Rust. The engine is a 54-sticker permutation model; [Bevy](https://bevyengine.org) draws it, animates turns, and reads the keyboard and mouse.
 
-- Canonical 54-sticker cube state with standard outside-view move notation.
-- Animated face turns, mouse gestures, scramble, undo/redo, and immediate reset.
-- On-screen controls, move history, and solved/turning status.
+Native only: `cargo run`. No web or WASM target.
+
+- Standard outside-view notation (`U D L R F B`, `'` for reverse, `2` for a half turn)
+- Queued, animated face turns — fast keyboard input plays in order
+- Mouse gestures on stickers, plus orbit and zoom
+- Scramble, undo/redo, and an immediate reset that cancels the queue
+- On-screen status: solved / turning / in progress, move count, last ten moves
+
+## Why Rust and Bevy
+
+A cube is a permutation problem, not a pile of meshes. `Face`, `Turn`, and `Color` are enums; the state is `[Color; 54]`. Undo is the inverse move. Redo is a stack. A new turn after undo drops the redo branch. Tests apply each of the 18 face turns sticker-by-sticker so matching colors cannot hide a broken cycle.
+
+Bevy is the desktop shell: 3D scene, input, and animation. The engine advances when a queued action starts; sticker materials stay on the previous permutation until that rotation finishes. The two layers can be tested apart — `src/lib.rs` for the cube, `src/main.rs` for the app.
 
 ## Project Layout
 
-- `src/lib.rs`: cube engine
-- `src/main.rs`: Bevy desktop application
+- `src/lib.rs`: cube engine (state, notation, scramble, undo/redo)
+- `src/main.rs`: Bevy desktop application (scene, input, animation, HUD)
 
 ## Getting Started
 
-### 1. Run tests
+Install a current stable Rust toolchain with [rustup](https://rustup.rs).
 
-Install a current stable Rust toolchain with [rustup](https://rustup.rs) first.
+### 1. Run tests
 
 ```bash
 cargo test
@@ -26,6 +36,8 @@ cargo test
 ```bash
 cargo run
 ```
+
+The window is 1280×820. On macOS, Option is treated as Alt so `Option` + a face key is a half turn, not a compose sequence.
 
 ## Controls
 
