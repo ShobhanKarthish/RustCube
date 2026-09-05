@@ -157,16 +157,17 @@ impl Cube {
 
     fn rotate_quarter(&mut self, face: Face, clockwise: bool) {
         let current = self.stickers;
-        let mut next = current;
 
-        for target_index in 0..54 {
+        for (target_index, target) in self.stickers.iter_mut().enumerate() {
             let target_ref = sticker_ref(target_index);
-            let source_ref = inverse_rotate_sticker(target_ref, face, clockwise);
-            let source_index = sticker_index(source_ref);
-            next[target_index] = current[source_index];
+            if belongs_to_face_layer(target_ref.position, face) {
+                let source_ref = StickerRef {
+                    position: rotate_vec(target_ref.position, face, !clockwise),
+                    normal: rotate_vec(target_ref.normal, face, !clockwise),
+                };
+                *target = current[sticker_index(source_ref)];
+            }
         }
-
-        self.stickers = next;
     }
 }
 
@@ -232,20 +233,6 @@ fn solved_stickers() -> [Color; 54] {
     stickers
 }
 
-fn inverse_rotate_sticker(sticker: StickerRef, face: Face, clockwise: bool) -> StickerRef {
-    if !belongs_to_face_layer(sticker.position, face) {
-        return sticker;
-    }
-
-    let turns = if clockwise { 3 } else { 1 };
-    let mut rotated = sticker;
-    for _ in 0..turns {
-        rotated.position = rotate_vec(rotated.position, face);
-        rotated.normal = rotate_vec(rotated.normal, face);
-    }
-    rotated
-}
-
 fn belongs_to_face_layer(position: Vec3, face: Face) -> bool {
     match face {
         Face::Up => position.y == 1,
@@ -257,34 +244,35 @@ fn belongs_to_face_layer(position: Vec3, face: Face) -> bool {
     }
 }
 
-fn rotate_vec(vec: Vec3, face: Face) -> Vec3 {
-    match face {
-        Face::Up => Vec3 {
+fn rotate_vec(vec: Vec3, face: Face, clockwise: bool) -> Vec3 {
+    // Clockwise is a negative quarter-turn about the face's outward normal.
+    match (face, clockwise) {
+        (Face::Down, true) | (Face::Up, false) => Vec3 {
             x: vec.z,
             y: vec.y,
             z: -vec.x,
         },
-        Face::Down => Vec3 {
+        (Face::Up, true) | (Face::Down, false) => Vec3 {
             x: -vec.z,
             y: vec.y,
             z: vec.x,
         },
-        Face::Right => Vec3 {
+        (Face::Right, true) | (Face::Left, false) => Vec3 {
             x: vec.x,
             y: vec.z,
             z: -vec.y,
         },
-        Face::Left => Vec3 {
+        (Face::Left, true) | (Face::Right, false) => Vec3 {
             x: vec.x,
             y: -vec.z,
             z: vec.y,
         },
-        Face::Front => Vec3 {
+        (Face::Front, true) | (Face::Back, false) => Vec3 {
             x: vec.y,
             y: -vec.x,
             z: vec.z,
         },
-        Face::Back => Vec3 {
+        (Face::Back, true) | (Face::Front, false) => Vec3 {
             x: -vec.y,
             y: vec.x,
             z: vec.z,
