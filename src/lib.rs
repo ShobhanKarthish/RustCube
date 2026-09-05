@@ -1,3 +1,6 @@
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Face {
     Up,
@@ -58,7 +61,7 @@ impl Cube {
             stickers: solved_stickers(),
             history: Vec::new(),
             redo_stack: Vec::new(),
-            scramble_seed: 0xC0B3_1234_ABCD_EF01,
+            scramble_seed: RandomState::new().hash_one(0_u8),
         }
     }
 
@@ -121,12 +124,12 @@ impl Cube {
         let mut last_face = None;
 
         while sequence.len() < len {
-            let face = faces[self.next_rand() as usize % faces.len()];
+            let face = faces[self.random_index(faces.len())];
             if last_face == Some(face) {
                 continue;
             }
 
-            let turn = turns[self.next_rand() as usize % turns.len()];
+            let turn = turns[self.random_index(turns.len())];
             let mv = Move { face, turn };
             self.apply_move(mv);
             sequence.push(mv);
@@ -137,11 +140,23 @@ impl Cube {
     }
 
     fn next_rand(&mut self) -> u64 {
-        self.scramble_seed = self
-            .scramble_seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
-        self.scramble_seed
+        // SplitMix64 mixes every output bit, unlike the alternating low bit of an LCG.
+        self.scramble_seed = self.scramble_seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut value = self.scramble_seed;
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^ (value >> 31)
+    }
+
+    fn random_index(&mut self, len: usize) -> usize {
+        let bound = len as u64;
+        let threshold = bound.wrapping_neg() % bound;
+        loop {
+            let value = self.next_rand();
+            if value >= threshold {
+                return (value % bound) as usize;
+            }
+        }
     }
 
     fn rotate(&mut self, mv: Move) {
