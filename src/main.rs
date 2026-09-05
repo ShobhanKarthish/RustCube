@@ -46,7 +46,24 @@ fn main() {
             )
                 .chain(),
         );
+    #[cfg(target_os = "macos")]
+    app.add_systems(Startup, configure_option_key);
     app.run();
+}
+
+#[cfg(target_os = "macos")]
+fn configure_option_key(
+    windows: NonSend<bevy::winit::WinitWindows>,
+    primary: Query<Entity, With<PrimaryWindow>>,
+) {
+    use winit::platform::macos::{OptionAsAlt, WindowExtMacOS};
+
+    for entity in &primary {
+        if let Some(window) = windows.get_window(entity) {
+            // Option-U otherwise starts macOS text composition instead of a half turn.
+            window.set_option_as_alt(OptionAsAlt::Both);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
