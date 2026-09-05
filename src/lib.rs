@@ -1,4 +1,5 @@
 use std::collections::hash_map::RandomState;
+use std::fmt;
 use std::hash::BuildHasher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +208,12 @@ impl Move {
     }
 
     pub fn notation(self) -> String {
+        self.to_string()
+    }
+}
+
+impl fmt::Display for Move {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let face = match self.face {
             Face::Up => "U",
             Face::Down => "D",
@@ -222,7 +229,7 @@ impl Move {
             Turn::Half => "2",
         };
 
-        format!("{face}{suffix}")
+        write!(formatter, "{face}{suffix}")
     }
 }
 
