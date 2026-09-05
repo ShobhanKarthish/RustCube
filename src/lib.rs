@@ -390,59 +390,208 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_cube_starts_solved() {
-        let cube = Cube::new();
+    fn face_turns_match_outside_view_notation() {
+        // Each strip moves to the next strip in the cycle for a clockwise turn.
+        // Indices are row-major on faces U, D, L, R, F, B, viewed from outside.
+        let cases = [
+            (
+                Face::Up,
+                0,
+                [[36, 37, 38], [18, 19, 20], [45, 46, 47], [27, 28, 29]],
+            ),
+            (
+                Face::Down,
+                9,
+                [[42, 43, 44], [33, 34, 35], [51, 52, 53], [24, 25, 26]],
+            ),
+            (
+                Face::Left,
+                18,
+                [[0, 3, 6], [36, 39, 42], [9, 12, 15], [53, 50, 47]],
+            ),
+            (
+                Face::Right,
+                27,
+                [[2, 5, 8], [51, 48, 45], [11, 14, 17], [38, 41, 44]],
+            ),
+            (
+                Face::Front,
+                36,
+                [[6, 7, 8], [27, 30, 33], [11, 10, 9], [26, 23, 20]],
+            ),
+            (
+                Face::Back,
+                45,
+                [[0, 1, 2], [24, 21, 18], [17, 16, 15], [29, 32, 35]],
+            ),
+        ];
+
+        for (face, start, strips) in cases {
+            let mut destinations: [usize; 54] = std::array::from_fn(|index| index);
+            for (source, target) in [2, 5, 8, 1, 4, 7, 0, 3, 6].into_iter().enumerate() {
+                destinations[start + source] = start + target;
+            }
+            for strip in 0..4 {
+                for offset in 0..3 {
+                    destinations[strips[strip][offset]] = strips[(strip + 1) % 4][offset];
+                }
+            }
+
+            for (turn, quarters) in [
+                (Turn::Clockwise, 1),
+                (Turn::CounterClockwise, 3),
+                (Turn::Half, 2),
+            ] {
+                // Probe every sticker separately, detecting omissions and duplicates
+                // even where a solved cube's equal-colored stickers would hide them.
+                for source in 0..54 {
+                    let mut target = source;
+                    for _ in 0..quarters {
+                        target = destinations[target];
+                    }
+                    let mut expected = [Color::White; 54];
+                    expected[target] = Color::Blue;
+
+                    let mut cube = Cube::new();
+                    cube.stickers = [Color::White; 54];
+                    cube.stickers[source] = Color::Blue;
+                    cube.apply_move(Move { face, turn });
+
+                    assert_eq!(
+                        cube.stickers(),
+                        &expected,
+                        "{face:?} {turn:?}, source sticker {source}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scramble_reaches_every_face_and_turn_and_applies_its_sequence() {
+        let mut cube = Cube::new();
+        cube.scramble_seed = 1;
+        let mut replay = cube.clone();
+        let sequence = cube.scramble(256);
+
+        assert_eq!(sequence.len(), 256);
+        assert!(sequence.windows(2).all(|pair| pair[0].face != pair[1].face));
+        for face in [
+            Face::Up,
+            Face::Down,
+            Face::Left,
+            Face::Right,
+            Face::Front,
+            Face::Back,
+        ] {
+            for turn in [Turn::Clockwise, Turn::CounterClockwise, Turn::Half] {
+                assert!(sequence.contains(&Move { face, turn }), "{face:?} {turn:?}");
+            }
+        }
+
+        replay.apply_moves(&sequence);
+        assert_eq!(cube.stickers(), replay.stickers());
+        assert_eq!(cube.history(), sequence);
+        for color in [
+            Color::White,
+            Color::Yellow,
+            Color::Orange,
+            Color::Red,
+            Color::Green,
+            Color::Blue,
+        ] {
+            assert_eq!(
+                cube.stickers()
+                    .iter()
+                    .filter(|&&value| value == color)
+                    .count(),
+                9
+            );
+        }
+
+        for mv in sequence.iter().rev() {
+            cube.apply_move(mv.inverse());
+        }
         assert!(cube.is_solved());
     }
 
     #[test]
-    fn inverse_moves_restore_state() {
+    fn undo_and_redo_restore_each_intermediate_state() {
         let mut cube = Cube::new();
-        let original = *cube.stickers();
+        cube.scramble_seed = 7;
+        let mut replay = cube.clone();
+        let sequence = cube.scramble(24);
+        let mut states = vec![*replay.stickers()];
+        for &mv in &sequence {
+            replay.apply_move(mv);
+            states.push(*replay.stickers());
+        }
 
-        let mv = Move {
+        for index in (0..sequence.len()).rev() {
+            assert_eq!(cube.undo(), Some(sequence[index].inverse()));
+            assert_eq!(cube.stickers(), &states[index]);
+            assert_eq!(cube.history(), &sequence[..index]);
+        }
+        assert_eq!(cube.undo(), None);
+        assert_eq!(cube.stickers(), &states[0]);
+
+        for (index, &mv) in sequence.iter().enumerate() {
+            assert_eq!(cube.redo(), Some(mv));
+            assert_eq!(cube.stickers(), &states[index + 1]);
+            assert_eq!(cube.history(), &sequence[..=index]);
+        }
+        assert_eq!(cube.redo(), None);
+        assert_eq!(cube.stickers(), states.last().unwrap());
+    }
+
+    #[test]
+    fn branching_discards_redo_and_reset_clears_both_histories() {
+        let prefix = Move {
             face: Face::Right,
             turn: Turn::Clockwise,
         };
+        let abandoned = Move {
+            face: Face::Up,
+            turn: Turn::CounterClockwise,
+        };
+        let branch = Move {
+            face: Face::Front,
+            turn: Turn::Half,
+        };
+        let mut cube = Cube::new();
+        cube.apply_moves(&[prefix, abandoned]);
+        assert_eq!(cube.undo(), Some(abandoned.inverse()));
+        cube.apply_move(branch);
 
-        cube.apply_move(mv);
-        cube.apply_move(mv.inverse());
+        let mut expected = Cube::new();
+        expected.apply_moves(&[prefix, branch]);
+        assert_eq!(cube.redo(), None);
+        assert_eq!(cube.stickers(), expected.stickers());
+        assert_eq!(cube.history(), &[prefix, branch]);
 
-        assert_eq!(*cube.stickers(), original);
+        assert_eq!(cube.undo(), Some(branch.inverse()));
+        cube.reset();
+        assert!(cube.is_solved());
+        assert!(cube.history().is_empty());
+        assert_eq!(cube.undo(), None);
+        assert_eq!(cube.redo(), None);
         assert!(cube.is_solved());
     }
 
     #[test]
-    fn half_turn_applied_twice_restores_state() {
-        let mut cube = Cube::new();
-        let original = *cube.stickers();
-
+    fn empty_scramble_preserves_redo_branch() {
         let mv = Move {
-            face: Face::Front,
-            turn: Turn::Half,
-        };
-
-        cube.apply_move(mv);
-        cube.apply_move(mv);
-
-        assert_eq!(*cube.stickers(), original);
-    }
-
-    #[test]
-    fn undo_and_redo_round_trip() {
-        let mut cube = Cube::new();
-        let original = *cube.stickers();
-
-        cube.apply_move(Move {
-            face: Face::Up,
+            face: Face::Back,
             turn: Turn::Clockwise,
-        });
-        assert!(!cube.is_solved());
-
+        };
+        let mut cube = Cube::new();
+        cube.apply_move(mv);
+        let moved = *cube.stickers();
         cube.undo();
-        assert_eq!(*cube.stickers(), original);
 
-        cube.redo();
-        assert!(!cube.is_solved());
+        assert!(cube.scramble(0).is_empty());
+        assert!(cube.is_solved());
+        assert_eq!(cube.redo(), Some(mv));
+        assert_eq!(cube.stickers(), &moved);
     }
 }
